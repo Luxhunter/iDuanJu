@@ -84,6 +84,8 @@ fun TVBoxVodPlayerScreen(
     var reverseOrder by remember { mutableStateOf(false) }
     var speed by remember { mutableFloatStateOf(1.0f) }
     var fullscreen by remember { mutableStateOf(false) }
+    val playerView = remember { mutableStateOf<PlayerView?>(null) }
+    androidx.activity.compose.BackHandler(enabled = fullscreen) { fullscreen = false }
     var controlsVisible by remember { mutableStateOf(true) }
     var playing by remember { mutableStateOf(false) }
     var buffering by remember { mutableStateOf(false) }
@@ -120,6 +122,7 @@ fun TVBoxVodPlayerScreen(
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             exo.removeListener(listener)
+            playerView.value?.player = null
             exo.release()
         }
     }
@@ -232,8 +235,10 @@ fun TVBoxVodPlayerScreen(
                         useController = false
                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                         player = exo
+                        playerView.value = this
                     }
                 },
+                onRelease = { view -> view.player = null; if (playerView.value == view) playerView.value = null },
                 update = { it.player = exo },
                 modifier = Modifier.fillMaxSize(),
             )

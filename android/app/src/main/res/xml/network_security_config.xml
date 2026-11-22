@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  User-added CMS, TVBox and plugin endpoints are arbitrary hosts chosen at runtime.
+  A static cleartext denylist would break those http:// sources. Known first-party
+  hosts are still upgraded to https in MacCMS / Huangguo client code.
+  Trust anchors stay on the system store; user-installed CAs are not trusted.
+-->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>

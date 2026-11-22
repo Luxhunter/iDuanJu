@@ -18,6 +18,7 @@ android {
         targetSdk = 35
         versionCode = 1623
         versionName = "1.6.23-android"
+        manifestPlaceholders["appLabel"] = "i短剧"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -42,6 +43,18 @@ android {
                 "true" -> applicationIdSuffix = ".legadoport"
                 "mac" -> applicationIdSuffix = ".legadoportmac" // separate local signer; preserve existing QA/user apps
             }
+        }
+        // Side-by-side test build. Different applicationId, debug keystore (not the upstream release key).
+        // Minify stays off: QuickJS / Rhino plugin hosts and JSON models are reached by name.
+        create("opt") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".opt"
+            versionNameSuffix = "-opt"
+            manifestPlaceholders["appLabel"] = "i短剧优化"
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
         }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

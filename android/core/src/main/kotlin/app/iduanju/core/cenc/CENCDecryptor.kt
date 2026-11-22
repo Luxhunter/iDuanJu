@@ -28,19 +28,17 @@ object CENCDecryptor {
         if (key.size != 16) throw Failure("content key 不是 32 位 hex")
         val collected = collect(bytes) ?: return false
         val (jobs, patches) = collected
-        val out = bytes.copyOf()
+        // In place: the previous full-buffer copy doubled the peak while a short episode was already in RAM.
         for (job in jobs) {
             var offsetInSample = 0
             for ((off, len) in job.ranges) {
                 if (len <= 0) continue
-                if (off < 0 || off + len > out.size) throw Failure("样本越界")
-                ctr(key, job.iv, offsetInSample, out, off, len)
+                if (off < 0 || off + len > bytes.size) throw Failure("样本越界")
+                ctr(key, job.iv, offsetInSample, bytes, off, len)
                 offsetInSample += len
             }
         }
-        for ((off, patch) in patches) patch.copyInto(out, off)
-        // mutate caller's array
-        System.arraycopy(out, 0, bytes, 0, bytes.size)
+        for ((off, patch) in patches) patch.copyInto(bytes, off)
         return true
     }
 

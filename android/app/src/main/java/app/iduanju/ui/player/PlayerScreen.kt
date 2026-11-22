@@ -38,6 +38,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -101,7 +103,36 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
             else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
     }
-    androidx.activity.compose.BackHandler(enabled = landscape) { setLandscape(false) }
+    var leaveAfterPortrait by remember { mutableStateOf(false) }
+    fun requestExit() {
+        if (landscape && !metrics.isTablet && activity != null) {
+            setLandscape(false)
+            leaveAfterPortrait = true
+        } else {
+            if (landscape) setLandscape(false)
+            onBack()
+        }
+    }
+    // Phone: one back returns to portrait, then leaves, so the list is not shown mid-rotation.
+    // The system back key and the on-screen back button share this path.
+    androidx.activity.compose.BackHandler { requestExit() }
+    LaunchedEffect(leaveAfterPortrait, landscape) {
+        if (!leaveAfterPortrait) return@LaunchedEffect
+        if (!landscape) { leaveAfterPortrait = false; onBack(); return@LaunchedEffect }
+        delay(500)
+        if (leaveAfterPortrait) { leaveAfterPortrait = false; onBack() }
+    }
+    val componentActivity = activity as? androidx.activity.ComponentActivity
+    var inPip by remember { mutableStateOf(componentActivity?.isInPictureInPictureMode == true) }
+    DisposableEffect(componentActivity) {
+        val host = componentActivity ?: return@DisposableEffect onDispose {}
+        val listener = androidx.core.util.Consumer<androidx.core.app.PictureInPictureModeChangedInfo> { info -> inPip = info.isInPictureInPictureMode }
+        host.addOnPictureInPictureModeChangedListener(listener)
+        onDispose { host.removeOnPictureInPictureModeChangedListener(listener) }
+    }
+    val pipAvailable = remember(componentActivity) {
+        componentActivity?.packageManager?.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE) == true
+    }
     LaunchedEffect(landscape) {
         val w = activity?.window ?: return@LaunchedEffect
         val ic = androidx.core.view.WindowCompat.getInsetsController(w, w.decorView)
@@ -120,6 +151,22 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
             androidx.media3.exoplayer.source.DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(ctx, httpFactory))
         ).build().also { it.playWhenReady = true }
     }
+    var boundView by remember { mutableStateOf<PlayerView?>(null) }
+    var heldFile by remember { mutableStateOf<String?>(null) }
+    var firstFrame by remember(seriesId, epIndex) { mutableStateOf(false) }
+    fun enterPip() {
+        val host = componentActivity ?: return
+        if (!pipAvailable || inPip) return
+        val vs = player.videoSize
+        val ratio = runCatching {
+            val w = if (vs.width > 0) vs.width else 16
+            val h = if (vs.height > 0) vs.height else 9
+            val clamped = (w.toFloat() / h).coerceIn(0.42f, 2.39f)
+            android.util.Rational((clamped * 1000).toInt().coerceAtLeast(1), 1000)
+        }.getOrElse { android.util.Rational(16, 9) }
+        runCatching { host.enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().setAspectRatio(ratio).build()) }
+    }
+    DisposableEffect(Unit) { onDispose { heldFile?.let { EpisodeCache.release(it) } } }
     DisposableEffect(player) {
         val l = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -135,11 +182,18 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
                 tags = TechTags.from(player, quality)
             }
             // videoFormat/audioFormat are populated once the renderers start, after onTracksChanged
-            override fun onRenderedFirstFrame() { tags = TechTags.from(player, quality) }
+            override fun onRenderedFirstFrame() { firstFrame = true; tags = TechTags.from(player, quality) }
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) { tags = TechTags.from(player, quality) }
         }
         player.addListener(l)
-        onDispose { keepScreenOn(activity, false); player.removeListener(l); if (queue == null) player.release() }
+        onDispose {
+            keepScreenOn(activity, false)
+            player.removeListener(l)
+            if (queue == null) {
+                boundView?.player = null
+                player.release()
+            }
+        }
     }
 
     val activeQueue by rememberUpdatedState(queue)
@@ -179,8 +233,8 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
         val ep = d.episodes.getOrNull(epIndex) ?: return@LaunchedEffect
         if(previousEpisode >= 0 && previousEpisode != epIndex) centerSuppressed=true
         previousEpisode=epIndex
-        error = null; status = "取流中…"
-        player.stop(); player.clearMediaItems()
+        error = null; status = "取流中…"; firstFrame = false
+        // Replace the item in place. stop()+clearMediaItems() dropped the surface to black before the next frame.
         if(fixture) {
             val local=java.io.File(ctx.cacheDir,"ui-color-bars.mp4")
             if(!local.exists())withContext(Dispatchers.IO){ctx.assets.open("player_landscape.mp4").use{input->local.outputStream().use{input.copyTo(it)}}}
@@ -192,6 +246,12 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
             val p = EpisodeCache.get(ep) { status = it }.await()
             quality = p.quality
             status = ""
+            val local = p.uri.takeIf { it.startsWith("/") }
+            if (heldFile != local) {
+                heldFile?.let { EpisodeCache.release(it) }
+                if (local != null) EpisodeCache.retain(local)
+                heldFile = local
+            }
             // plugin / 采集站 streams may need Referer/Origin/UA on every segment request
             httpFactory.setUserAgent(p.headers.entries.firstOrNull { it.key.equals("user-agent", true) }?.value ?: app.iduanju.core.cms.MacCMS.UA)
             httpFactory.setDefaultRequestProperties(p.headers.filterKeys { !it.equals("user-agent", true) })
@@ -243,6 +303,7 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
         }
     }
 
+    androidx.compose.runtime.SideEffect { if (inPip) showChrome = false }
     val isPortraitMedia = remember(player.videoSize, seriesId) {
         val vs = player.videoSize
         if (vs.width > 0 && vs.height > 0) vs.height >= vs.width else !seriesId.startsWith("cms:")
@@ -254,10 +315,15 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
             factory = {
                 PlayerView(it).apply {
                     useController = false
-                    setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
                     layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                     this.player = player
+                    boundView = this
                 }
+            },
+            onRelease = { view ->
+                view.player = null
+                if (boundView == view) boundView = null
             },
             update = { view ->
                 view.resizeMode = if (fillMode) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -275,6 +341,12 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
             },
             modifier = Modifier.fillMaxSize(),
         )
+        if (!firstFrame && !inPip) {
+            val cover = detail?.cover?.takeIf { it.isNotEmpty() }
+            Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+                if (cover != null) AsyncImage(cover, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            }
+        }
         // official danmaku (红果 only), lanes under the top bar + tech strip, never into the bottom controls
         val epNow = detail?.episodes?.getOrNull(epIndex)
         if (danmaku && epNow != null && seriesId.all { it.isDigit() }) {
@@ -365,7 +437,7 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
             .background(Brush.verticalGradient(0f to Color.Transparent, 0.42f to Color.Black.copy(0.16f), 1f to Color.Black.copy(0.45f))))
         Column(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = if(landscape)64.dp else 16.dp).padding(top = if(landscape)14.dp else 6.dp).graphicsLayer { alpha = chromeA }) {
             Row(Modifier.height(44.dp), verticalAlignment = Alignment.CenterVertically) {
-                CircleBtn(Icons.AutoMirrored.Filled.ArrowBackIos, "返回", showChrome && !locked, onBack)
+                CircleBtn(Icons.AutoMirrored.Filled.ArrowBackIos, "返回", showChrome && !locked && !inPip) { requestExit() }
                 if(landscape) {
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
@@ -380,7 +452,7 @@ fun PlayerScreen(seriesId: String, startEp: Int, onBack: () -> Unit, queue: Vide
                     CircleBtn(Icons.Filled.FullscreenExit,"退出横屏",showChrome&&!locked){setLandscape(false)}
                 } else {
                     Spacer(Modifier.weight(1f))
-                    CircleBtn(Icons.Filled.PictureInPictureAlt, "画中画", showChrome) {}
+                    if (pipAvailable) CircleBtn(Icons.Filled.PictureInPictureAlt, "画中画", showChrome && !inPip, ::enterPip)
                     Spacer(Modifier.width(10.dp))
                     val fav = lib.isFavorite(seriesId)
                     if (queue == null) CircleBtn(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, "收藏", showChrome) {

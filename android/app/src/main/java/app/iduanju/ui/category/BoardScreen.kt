@@ -7,7 +7,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,34 +28,41 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Rows and scroll for one board route. Survives detail/player because the ViewModel is tied to that back stack entry. */
+class BoardSession : androidx.lifecycle.ViewModel() {
+    val items = androidx.compose.runtime.mutableStateListOf<HGSeries>()
+    var nextOffset by androidx.compose.runtime.mutableIntStateOf(0)
+    var hasMore by androidx.compose.runtime.mutableStateOf(true)
+    var loading by androidx.compose.runtime.mutableStateOf(false)
+    var err by androidx.compose.runtime.mutableStateOf<String?>(null)
+    val grid = LazyGridState()
+}
+
 /** iOS BoardListView: the full board behind a home section's 「全部」 (numbered grid, paged). */
 @Composable
 fun BoardScreen(board: BoardSpec, onBack: () -> Unit, onOpenDetail: (String) -> Unit) {
     val c = IdjThemeColors
     val scope = rememberCoroutineScope()
-    val items = remember { mutableStateListOf<HGSeries>() }
-    var nextOffset by remember { mutableIntStateOf(0) }
-    var hasMore by remember { mutableStateOf(true) }
-    var loading by remember { mutableStateOf(false) }
-    var err by remember { mutableStateOf<String?>(null) }
+    val vm: BoardSession = androidx.lifecycle.viewmodel.compose.viewModel(key = board.id)
+    val items = vm.items
+    val grid = vm.grid
 
     fun load() {
-        if (loading) return
-        loading = true; err = null
+        if (vm.loading) return
+        vm.loading = true; vm.err = null
         scope.launch {
             try {
-                val p = withContext(Dispatchers.IO) { IdjApp.instance.hongguo.rank(board.sub, board.genre, nextOffset, items.map { it.seriesId }) }
+                val p = withContext(Dispatchers.IO) { IdjApp.instance.hongguo.rank(board.sub, board.genre, vm.nextOffset, items.map { it.seriesId }) }
                 val seen = items.map { it.seriesId }.toSet()
                 items.addAll(p.items.filter { it.seriesId !in seen })
-                nextOffset = p.nextOffset ?: (nextOffset + p.items.size); hasMore = p.hasMore && p.items.isNotEmpty()
-            } catch (e: Exception) { err = e.message ?: "加载失败" }
-            loading = false
+                vm.nextOffset = p.nextOffset ?: (vm.nextOffset + p.items.size); vm.hasMore = p.hasMore && p.items.isNotEmpty()
+            } catch (e: Exception) { vm.err = e.message ?: "加载失败" }
+            vm.loading = false
         }
     }
-    LaunchedEffect(Unit) { if (items.isEmpty()) load() }
-    val grid = rememberLazyGridState()
+    LaunchedEffect(board.id) { if (items.isEmpty()) load() }
     LaunchedEffect(grid) {
-        snapshotFlow { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last -> if (hasMore && !loading && err == null && last >= items.size - 3) load() }
+        snapshotFlow { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last -> if (vm.hasMore && !vm.loading && vm.err == null && last >= items.size - 3) load() }
     }
 
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
@@ -70,9 +77,9 @@ fun BoardScreen(board: BoardSpec, onBack: () -> Unit, onOpenDetail: (String) -> 
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
                     when {
-                        loading -> CircularProgressIndicator(color = c.secondary, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
-                        err != null -> Text("$err · 点击重试", color = c.secondary, fontSize = 13.sp, modifier = Modifier.clickable { load() })
-                        !hasMore && items.isNotEmpty() -> Text("没有更多了", color = c.secondary, fontSize = 12.sp)
+                        vm.loading -> CircularProgressIndicator(color = c.secondary, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+                        vm.err != null -> Text("${vm.err} · 点击重试", color = c.secondary, fontSize = 13.sp, modifier = Modifier.clickable { load() })
+                        !vm.hasMore && items.isNotEmpty() -> Text("没有更多了", color = c.secondary, fontSize = 12.sp)
                     }
                 }
             }
