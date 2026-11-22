@@ -13,6 +13,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -133,6 +136,10 @@ fun RootScreen(initialRoute: String? = null) {
                 }
                 composable(
                     "tvbox/vod/{siteKey}/{sid}/{ep}?title={title}&cover={cover}",
+                    enterTransition = { fadeIn(tween(180)) },
+                    exitTransition = { fadeOut(tween(140)) },
+                    popEnterTransition = { fadeIn(tween(180)) },
+                    popExitTransition = { fadeOut(tween(140)) },
                     arguments = listOf(
                         navArgument("siteKey") { type = NavType.StringType },
                         navArgument("sid") { type = NavType.StringType },
@@ -160,6 +167,10 @@ fun RootScreen(initialRoute: String? = null) {
                 }
                 composable(
                     "tvbox/live/{repoId}/{liveId}/{chIdx}",
+                    enterTransition = { fadeIn(tween(180)) },
+                    exitTransition = { fadeOut(tween(140)) },
+                    popEnterTransition = { fadeIn(tween(180)) },
+                    popExitTransition = { fadeOut(tween(140)) },
                     arguments = listOf(
                         navArgument("repoId") { type = NavType.StringType },
                         navArgument("liveId") { type = NavType.StringType },
@@ -208,6 +219,10 @@ fun RootScreen(initialRoute: String? = null) {
                     app.iduanju.manga.MangaReaderScreen(e.arguments!!.getString("id")!!, e.arguments!!.getInt("i"), e.arguments!!.getInt("p"), onBack = { nav.popBackStack() }) }
                 composable(
                     "player/{sid}/{ep}",
+                    enterTransition = { fadeIn(tween(180)) },
+                    exitTransition = { fadeOut(tween(140)) },
+                    popEnterTransition = { fadeIn(tween(180)) },
+                    popExitTransition = { fadeOut(tween(140)) },
                     arguments = listOf(
                         navArgument("sid") { type = NavType.StringType },
                         navArgument("ep") { type = NavType.IntType },

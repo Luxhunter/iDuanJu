@@ -22,7 +22,16 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 
 /** SharedPreferences-backed map for HuangguoClient's mirror memory (stv.huangguo.*). */
 class PrefsMap(ctx: Context) : AbstractMutableMap<String, String>() {
-    private val sp = ctx.getSharedPreferences("idj", Context.MODE_PRIVATE)
+    private val sp = ctx.getSharedPreferences("idj-sensitive", Context.MODE_PRIVATE).also { secret ->
+        val legacy = ctx.getSharedPreferences("idj", Context.MODE_PRIVATE)
+        val moved = legacy.all.filter { it.key.startsWith("stv.huangguo.") && it.value is String }
+        if (moved.isNotEmpty()) {
+            val into = secret.edit()
+            val out = legacy.edit()
+            moved.forEach { (k, v) -> into.putString(k, v as String); out.remove(k) }
+            into.apply(); out.apply()
+        }
+    }
     override val entries: MutableSet<MutableMap.MutableEntry<String, String>>
         get() = sp.all.filter { it.key.startsWith("stv.huangguo.") && it.value is String }.map { java.util.AbstractMap.SimpleEntry(it.key, it.value as String) as MutableMap.MutableEntry<String, String> }.toMutableSet()
     override fun get(key: String): String? = sp.getString(key, null)

@@ -70,9 +70,9 @@ fun TVBoxHubScreen(
     val adultUnlocked = IdjApp.instance.cms.adultUnlocked
     val activeRepo = store.activeRepo
 
-    var mode by remember { mutableIntStateOf(0) } // 0 = 点播, 1 = 直播
-    var selectedSiteKey by remember { mutableStateOf<String?>(null) }
-    var selectedLiveId by remember { mutableStateOf<String?>(null) }
+    var mode by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) } // 0 = 点播, 1 = 直播
+    var selectedSiteKey by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedLiveId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var showPickerSheet by remember { mutableStateOf(false) }
 
     val sites = remember(activeRepo, adultUnlocked) {
@@ -272,6 +272,46 @@ private fun HubSegmentTab(label: String, selected: Boolean, onClick: () -> Unit)
     }
 }
 
+/** Point-of-view catalog for one TVBox site. Kept on the TVBox back stack while the player is open. */
+class TvBoxCatalogSession : androidx.lifecycle.ViewModel() {
+    var query by mutableStateOf("")
+    var submittedQuery by mutableStateOf("")
+    var searchAllSites by mutableStateOf(false)
+    var selCat by mutableIntStateOf(0)
+    var gen by mutableIntStateOf(0)
+    val items = mutableStateListOf<Pair<TVBoxRepoSite, HGSeries>>()
+    var page by mutableIntStateOf(1)
+    var hasMore by mutableStateOf(true)
+    var loading by mutableStateOf(false)
+    var error by mutableStateOf<String?>(null)
+    val grid = androidx.compose.foundation.lazy.grid.LazyGridState()
+
+    fun selectCat(index: Int) {
+        if (index == selCat) return
+        selCat = index
+        bump()
+    }
+
+    fun submit(text: String) {
+        submittedQuery = text
+        bump()
+    }
+
+    fun toggleSearchAll() {
+        searchAllSites = !searchAllSites
+        bump()
+    }
+
+    private fun bump() {
+        gen++
+        items.clear()
+        page = 1
+        hasMore = true
+        error = null
+        loading = false
+    }
+}
+
 @Composable
 private fun TVBoxVodCatalogPane(
     repoId: String,
@@ -282,77 +322,79 @@ private fun TVBoxVodCatalogPane(
     val c = IdjThemeColors
     val store = IdjApp.instance.tvbox
     val scope = rememberCoroutineScope()
-
-    var query by remember { mutableStateOf("") }
-    var submittedQuery by remember { mutableStateOf("") }
-    var searchAllSites by remember { mutableStateOf(false) }
-
+    val vm: TvBoxCatalogSession = androidx.lifecycle.viewmodel.compose.viewModel(key = "tvbox:${repoId}:${site.key}")
+    var query by vm::query
+    var submittedQuery by vm::submittedQuery
+    val searchAllSites = vm.searchAllSites
     val cats = remember(site.key, site.categories) {
         listOf("" to "最新") + site.categories.map { it.id to it.name }
     }
-    var selCat by remember(site.key) { mutableIntStateOf(0) }
-    val items = remember(site.key, selCat, submittedQuery, searchAllSites) { mutableStateListOf<Pair<TVBoxRepoSite, HGSeries>>() }
-    var page by remember(site.key, selCat, submittedQuery, searchAllSites) { mutableIntStateOf(1) }
-    var hasMore by remember(site.key, selCat, submittedQuery, searchAllSites) { mutableStateOf(true) }
-    var loading by remember(site.key, selCat, submittedQuery, searchAllSites) { mutableStateOf(false) }
-    var error by remember(site.key, selCat, submittedQuery, searchAllSites) { mutableStateOf<String?>(null) }
-    val gridState = rememberLazyGridState()
+    val items = vm.items
+    val gridState = vm.grid
 
     suspend fun loadMore() {
-        if (loading || !hasMore) return
-        loading = true
+        if (vm.loading || !vm.hasMore) return
+        val myGen = vm.gen
+        vm.loading = true
         try {
-            if (submittedQuery.isNotBlank() && searchAllSites) {
+            if (vm.submittedQuery.isNotBlank() && vm.searchAllSites) {
                 val results = withContext(Dispatchers.IO) {
                     coroutineScope {
                         allSites.take(10).map { s ->
                             async {
-                                runCatching { MacCMS.search(s.toCMSSite(), submittedQuery, 1).items.map { s to it } }.getOrDefault(emptyList())
+                                runCatching { MacCMS.search(s.toCMSSite(), vm.submittedQuery, 1).items.map { s to it } }.getOrDefault(emptyList())
                             }
                         }.awaitAll().flatten()
                     }
                 }
+                if (myGen != vm.gen) return
                 items.clear()
                 items.addAll(results)
-                hasMore = false
-                error = null
-            } else if (submittedQuery.isNotBlank()) {
-                val p = withContext(Dispatchers.IO) { MacCMS.search(site.toCMSSite(), submittedQuery, page) }
+                vm.hasMore = false
+                vm.error = null
+            } else if (vm.submittedQuery.isNotBlank()) {
+                val p = withContext(Dispatchers.IO) { MacCMS.search(site.toCMSSite(), vm.submittedQuery, vm.page) }
+                if (myGen != vm.gen) return
                 val seen = items.map { it.second.seriesId }.toHashSet()
                 items.addAll(p.items.filter { seen.add(it.seriesId) }.map { site to it })
-                hasMore = p.hasMore
-                page += 1
-                error = null
+                vm.hasMore = p.hasMore
+                vm.page += 1
+                vm.error = null
             } else {
-                val catId = cats.getOrNull(selCat)?.first.orEmpty()
+                val catId = cats.getOrNull(vm.selCat)?.first.orEmpty()
+                val requestPage = vm.page
                 val p = withContext(Dispatchers.IO) {
-                    val o = MacCMS.fetch(site.api, buildMap { put("ac", "detail"); put("pg", page.toString()); if (catId.isNotEmpty()) put("t", catId) })
-                    if (catId.isEmpty() && page == 1) {
+                    val o = MacCMS.fetch(site.api, buildMap { put("ac", "detail"); put("pg", requestPage.toString()); if (catId.isNotEmpty()) put("t", catId) })
+                    if (catId.isEmpty() && requestPage == 1) {
                         val parsedCats = MacCMS.parseCategories(o)
                         if (parsedCats.isNotEmpty()) withContext(Dispatchers.Main) { store.cacheSiteCategories(repoId, site.key, parsedCats) }
                     }
-                    MacCMS.page(o, site.key, page)
+                    MacCMS.page(o, site.key, requestPage)
                 }
+                if (myGen != vm.gen) return
                 val seen = items.map { it.second.seriesId }.toHashSet()
                 items.addAll(p.items.filter { seen.add(it.seriesId) }.map { site to it })
-                hasMore = p.hasMore
-                page += 1
-                error = null
+                vm.hasMore = p.hasMore
+                vm.page += 1
+                vm.error = null
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            error = e.message ?: "加载失败"
+            if (myGen == vm.gen) vm.error = e.message ?: "加载失败"
         } finally {
-            loading = false
+            if (myGen == vm.gen) vm.loading = false
         }
     }
 
-    LaunchedEffect(site.key, selCat, submittedQuery, searchAllSites) { loadMore() }
+    LaunchedEffect(site.key, vm.selCat, vm.submittedQuery, vm.searchAllSites, vm.gen) {
+        if (items.isEmpty()) loadMore()
+    }
     val nearEnd by remember {
         derivedStateOf { (gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= gridState.layoutInfo.totalItemsCount - 6 }
     }
     LaunchedEffect(nearEnd, items.size) { if (nearEnd && items.isNotEmpty()) loadMore() }
+    val selCat = vm.selCat
 
     val latestWatch = store.recentWatches.firstOrNull()
 
@@ -386,13 +428,13 @@ private fun TVBoxVodCatalogPane(
                         value = query,
                         onValueChange = {
                             query = it
-                            if (it.isBlank()) submittedQuery = ""
+                            if (it.isBlank()) vm.submit("")
                         },
                         singleLine = true,
                         textStyle = TextStyle(color = c.text, fontSize = 13.sp),
                         cursorBrush = SolidColor(c.accent),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { submittedQuery = query.trim() }),
+                        keyboardActions = KeyboardActions(onSearch = { vm.submit(query.trim()) }),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -402,8 +444,8 @@ private fun TVBoxVodCatalogPane(
                         .clip(RoundedCornerShape(14.dp))
                         .background(if (searchAllSites) c.accent.copy(0.20f) else c.text.copy(0.10f))
                         .clickable {
-                            searchAllSites = !searchAllSites
-                            if (query.isNotBlank()) submittedQuery = query.trim()
+                            vm.toggleSearchAll()
+                            if (query.isNotBlank()) vm.submit(query.trim())
                         }
                         .padding(horizontal = 10.dp),
                     contentAlignment = Alignment.Center,
@@ -424,7 +466,7 @@ private fun TVBoxVodCatalogPane(
                                 .height(30.dp)
                                 .clip(RoundedCornerShape(15.dp))
                                 .background(if (on) c.text else c.text.copy(0.068f))
-                                .clickable { selCat = idx }
+                                .clickable { vm.selectCat(idx) }
                                 .padding(horizontal = 13.dp),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -555,8 +597,8 @@ private fun TVBoxVodCatalogPane(
         item(span = { GridItemSpan(maxLineSpan) }) {
             Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
                 when {
-                    loading -> CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.secondary)
-                    error != null -> Text("$error · 点击重试", color = c.secondary, fontSize = 13.sp, modifier = Modifier.clickable { scope.launch { loadMore() } })
+                    vm.loading -> CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.secondary)
+                    vm.error != null -> Text("${vm.error} · 点击重试", color = c.secondary, fontSize = 13.sp, modifier = Modifier.clickable { scope.launch { loadMore() } })
                     items.isEmpty() -> Text("暂无内容，试试切换分类或站点", color = c.secondary, fontSize = 13.sp)
                 }
             }

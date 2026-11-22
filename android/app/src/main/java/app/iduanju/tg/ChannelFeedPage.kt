@@ -49,7 +49,7 @@ fun ChannelFeedPage(onPlay: (String) -> Unit) {
     val adult = app.cms.adultUnlocked
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var only by remember { mutableStateOf<String?>(null) }
+    var only by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
     val open: (String) -> Unit = { u -> runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }; Unit }
     val all = store.feed(only, adult)

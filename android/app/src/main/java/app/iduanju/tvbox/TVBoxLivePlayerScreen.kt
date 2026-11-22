@@ -92,6 +92,7 @@ fun TVBoxLivePlayerScreen(
         }
     }
 
+    val playerView = remember { mutableStateOf<androidx.media3.ui.PlayerView?>(null) }
     val exo = remember {
         val ok = OkHttpClient.Builder().followRedirects(true).build()
         val ds = OkHttpDataSource.Factory(ok).setUserAgent(MacCMS.UA)
@@ -119,6 +120,7 @@ fun TVBoxLivePlayerScreen(
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             exo.removeListener(listener)
+            playerView.value?.player = null
             exo.release()
         }
     }
@@ -141,12 +143,14 @@ fun TVBoxLivePlayerScreen(
     ) {
         AndroidView(
             factory = { context ->
-                PlayerView(context).apply {
+                    PlayerView(context).apply {
                     useController = false
                     this.resizeMode = resizeMode
                     player = exo
+                    playerView.value = this
                 }
             },
+            onRelease = { view -> view.player = null; if (playerView.value == view) playerView.value = null },
             update = {
                 it.player = exo
                 it.resizeMode = resizeMode

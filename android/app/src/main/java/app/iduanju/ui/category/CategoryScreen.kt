@@ -121,6 +121,7 @@ fun CategoryScreen(onOpenDetail: (String) -> Unit) {
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) { if (token == panelGen) panelErr = e.message }
     }
+    LaunchedEffect(filterMode, genre, sub, selected.size) { vm.persist() }
     LaunchedEffect(filterMode, genre, sub) {
         val key = "$filterMode/$genre/$sub"
         // Returning from detail re-enters composition with the same key: keep the cached list, no refetch.
@@ -130,6 +131,9 @@ fun CategoryScreen(onOpenDetail: (String) -> Unit) {
         if (!filterMode || panel != null) { vm.loadedKey = "$filterMode/$genre/$sub"; android.util.Log.i("IDJ", "category load ${vm.loadedKey}"); load(true) }
     }
     val grid = vm.grid
+    LaunchedEffect(grid) {
+        snapshotFlow { grid.firstVisibleItemIndex to grid.firstVisibleItemScrollOffset }.collect { vm.persist() }
+    }
     LaunchedEffect(Unit) { if(app.iduanju.BuildConfig.DEBUG && app.iduanju.ui.UiEvidence.scroll) { kotlinx.coroutines.delay(2500); grid.scrollToItem(3) } }
     LaunchedEffect(grid) {
         snapshotFlow { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last ->
@@ -150,8 +154,9 @@ fun CategoryScreen(onOpenDetail: (String) -> Unit) {
             else { selected[row.type] = value; names[row.type] = row.items.firstOrNull { it.id == value }?.name ?: "" }
             load(true)
         }
+        vm.persist()
     }
-    fun resetAll() { selected.clear(); names.clear(); gen++; items.clear(); panel = null; scope.launch { loadPanel(); if (panel != null) load(true) } }
+    fun resetAll() { selected.clear(); names.clear(); gen++; items.clear(); panel = null; vm.persist(); scope.launch { loadPanel(); if (panel != null) load(true) } }
     val picks = panel?.rows?.mapNotNull { r -> selected[r.type]?.takeIf { it.isNotEmpty() }?.let { id -> r.type to (r.items.firstOrNull { it.id == id }?.name ?: names[r.type] ?: "") } }?.filter { it.second.isNotEmpty() } ?: emptyList()
 
     DSPage(glow = !scrolled) {
@@ -312,15 +317,16 @@ internal fun RankRow(s: HGSeries, rank: Int, onOpen: (String) -> Unit) {
 internal fun NumberedPosterCell(s: HGSeries, rank: Int?, onOpen: (String) -> Unit) = PosterCell(s, rank, null, onOpen, Modifier.padding(bottom = 16.dp))
 
 
-class CategoryState : androidx.lifecycle.ViewModel() {
+class CategoryState(private val saved: androidx.lifecycle.SavedStateHandle) : androidx.lifecycle.ViewModel() {
+    private val restored = app.iduanju.core.restore.CategorySnapshotCodec.decode(saved.get<String>(SNAPSHOT))
     val scope get() = viewModelScope
-    val filterMode = mutableStateOf(app.iduanju.BuildConfig.DEBUG && app.iduanju.ui.UiEvidence.page == "filter")
-    val genre = mutableStateOf(HGRankGenre.all)
-    val sub = mutableStateOf(HGRankSub.hotSearch)
+    val filterMode = mutableStateOf(restored?.filterMode ?: (app.iduanju.BuildConfig.DEBUG && app.iduanju.ui.UiEvidence.page == "filter"))
+    val genre = mutableStateOf(HGRankGenre.entries.firstOrNull { it.name == restored?.genre } ?: HGRankGenre.all)
+    val sub = mutableStateOf(HGRankSub.entries.firstOrNull { it.name == restored?.sub } ?: HGRankSub.hotSearch)
     val panel = mutableStateOf<HGPanel?>(null)
     val panelErr = mutableStateOf<String?>(null)
-    val selected = androidx.compose.runtime.mutableStateMapOf<String, String>()
-    val names = androidx.compose.runtime.mutableStateMapOf<String, String>()
+    val selected = androidx.compose.runtime.mutableStateMapOf<String, String>().apply { restored?.selected?.let { putAll(it) } }
+    val names = androidx.compose.runtime.mutableStateMapOf<String, String>().apply { restored?.names?.let { putAll(it) } }
     val items = androidx.compose.runtime.mutableStateListOf<HGSeries>()
     val nextOffset = androidx.compose.runtime.mutableIntStateOf(0)
     val session = mutableStateOf<String?>(null)
@@ -330,5 +336,17 @@ class CategoryState : androidx.lifecycle.ViewModel() {
     val gen = androidx.compose.runtime.mutableIntStateOf(0)
     val panelGen = androidx.compose.runtime.mutableIntStateOf(0)
     var loadedKey: String? = null
-    val grid = androidx.compose.foundation.lazy.grid.LazyGridState()
+    val grid = androidx.compose.foundation.lazy.grid.LazyGridState(restored?.scrollIndex ?: 0, restored?.scrollOffset ?: 0)
+
+    /** Filters, genre, sub-rank and scroll survive process death. Row data stays in this ViewModel for a normal back stack pop. */
+    fun persist() {
+        saved[SNAPSHOT] = app.iduanju.core.restore.CategorySnapshotCodec.encode(
+            app.iduanju.core.restore.CategorySnapshot(
+                filterMode.value, genre.value.name, sub.value.name, selected.toMap(), names.toMap(),
+                grid.firstVisibleItemIndex, grid.firstVisibleItemScrollOffset,
+            )
+        )
+    }
+
+    private companion object { const val SNAPSHOT = "category.snapshot" }
 }

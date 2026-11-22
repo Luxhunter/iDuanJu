@@ -2,6 +2,7 @@ package app.iduanju.ui.player
 
 import app.iduanju.IdjApp
 import app.iduanju.core.cenc.CENCDecryptor
+import app.iduanju.core.player.PlaybackFileGuard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,11 @@ data class Playable(val uri: String, val quality: String?, val codec: String, va
 object EpisodeCache {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inflight = ConcurrentHashMap<String, Deferred<Playable>>()
+    private val guard = PlaybackFileGuard()
+
+    /** Mark a local file a player is still reading so precache trim cannot delete it. */
+    fun retain(path: String) { if (path.startsWith("/")) guard.retain(path) }
+    fun release(path: String) { guard.release(path) }
     private val httpDirect = OkHttpClient.Builder().proxy(Proxy.NO_PROXY)
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build()
     private val httpSystem = httpDirect.newBuilder().proxy(null).build()
@@ -69,26 +75,32 @@ object EpisodeCache {
         val f = File(dir(), "${safeName(vid)}.${s.quality ?: "q"}.${s.codec}.mp4")
         if (f.length() > 0) return Playable(f.absolutePath, s.quality, s.codec, true)
         onStatus("下载解密…")
-        val enc = http.newCall(Request.Builder().url(s.url).header("User-Agent", "com.phoenix.read/73932").build()).execute().use { resp ->
-            if (!resp.isSuccessful) throw Exception("媒体 HTTP ${resp.code}")
-            resp.body!!.bytes()
-        }
-        if (enc.isEmpty()) throw Exception("媒体空包")
-        val dec = CENCDecryptor.decryptCopy(enc, s.key)
-        val tmp = File.createTempFile(f.name, ".part", dir())
+        val enc = File.createTempFile("enc", ".bin", dir())
         try {
-            tmp.writeBytes(dec)
-            if (!tmp.renameTo(f)) throw java.io.IOException("无法保存播放缓存")
-        } finally { tmp.delete() }
+            http.newCall(Request.Builder().url(s.url).header("User-Agent", "com.phoenix.read/73932").build()).execute().use { resp ->
+                if (!resp.isSuccessful) throw Exception("媒体 HTTP ${resp.code}")
+                val body = resp.body ?: throw Exception("媒体空包")
+                body.byteStream().use { input -> enc.outputStream().use { output -> input.copyTo(output) } }
+            }
+            if (enc.length() == 0L) throw Exception("媒体空包")
+            // One buffer, decrypted in place. The MP4 sample table needs random access, so a full stream cipher is not possible.
+            val bytes = enc.readBytes()
+            if (!CENCDecryptor.decrypt(bytes, s.key)) throw Exception("无法解密")
+            val tmp = File.createTempFile(safeName(vid).take(12).padEnd(3, 'x'), ".part", dir())
+            try {
+                tmp.writeBytes(bytes)
+                if (!tmp.renameTo(f)) throw java.io.IOException("无法保存播放缓存")
+            } finally { tmp.delete() }
+        } finally { enc.delete() }
         trim(f)
         return Playable(f.absolutePath, s.quality, s.codec, true)
     }
 
-    /** Preserve the file returned to the player even when it alone exceeds the budget. */
+    /** Preserve the file returned to the player, and any path [retain]ed by a live player, even over budget. */
     private fun trim(keep: File) {
-        val files = dir().listFiles()?.filter { it != keep && !it.name.endsWith(".part") }?.sortedBy { it.lastModified() } ?: return
-        var total = files.sumOf { it.length() } + keep.length()
+        val files = dir().listFiles()?.filter { it != keep && !it.name.endsWith(".part") && !it.name.endsWith(".bin") }?.sortedBy { it.lastModified() } ?: return
         val budget = IdjApp.instance.settings.playbackCacheMB.toLong() shl 20
-        for (f in files) { if (total < budget) break; total -= f.length(); f.delete() }
+        val victims = guard.pickVictims(files.map { it.absolutePath to it.length() }, keep.absolutePath, keep.length(), budget)
+        victims.forEach { File(it).delete() }
     }
 }

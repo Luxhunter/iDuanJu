@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Device override, Huangguo clearance cookies and other secrets. User sources stay in idj.xml. -->
+    <exclude domain="sharedpref" path="idj-sensitive.xml" />
+</full-backup-content>

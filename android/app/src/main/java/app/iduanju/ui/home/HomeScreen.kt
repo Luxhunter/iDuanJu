@@ -129,6 +129,12 @@ fun formatCount(n: Long) = HomeFmt.count(n)
 
 @Composable
 fun HomeScreen(onOpenDetail: (String) -> Unit, onSearch: () -> Unit = {}, onPlay: (String) -> Unit = {}, onOpenManga: (String) -> Unit = {}, onImmersiveChanged: (Boolean) -> Unit = {}) {
+    val homeSession: HomeSession = androidx.lifecycle.viewmodel.compose.viewModel()
+    DisposableEffect(homeSession) {
+        val previous = HomeSubSel.persist
+        HomeSubSel.persist = { homeSession.persist() }
+        onDispose { HomeSubSel.persist = previous }
+    }
     val c = IdjThemeColors
     // iOS HomeSource.all: [红果, 黄果, AI剧] + visible sites (采集站 / plugins) + [频道, 漫画]
     val sites = IdjApp.instance.cms.visibleSites.filterNot { it.origin.equals("TVBox", ignoreCase = true) || it.origin.startsWith("TVBox") }
@@ -187,7 +193,7 @@ fun HomeScreen(onOpenDetail: (String) -> Unit, onSearch: () -> Unit = {}, onPlay
                 ChannelBar(labels, pager.currentPage, c.text, onMore = { sheet = true }) { scope.launch { pager.animateScrollToPage(it) } }
                 if (sheet) ChannelSheet(pages, labels, pager.currentPage, onDismiss = { sheet = false }) { page, sub ->
                     sheet = false
-                    if (sub != null) HomeSubSel.map[labels[page]] = sub
+                    if (sub != null) HomeSubSel.put(labels[page], sub)
                     scope.launch { pager.animateScrollToPage(page) }
                 }
             }
@@ -210,7 +216,7 @@ fun HomeScreen(onOpenDetail: (String) -> Unit, onSearch: () -> Unit = {}, onPlay
                         Row(Modifier.padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf("红果 AI剧", "黄果 AI 站").forEachIndexed { i, t ->
                                 val on = i == sel
-                                Box(Modifier.height(30.dp).clip(RoundedCornerShape(50)).background(if (on) c.text else c.text.copy(0.1f)).clickable { HomeSubSel.map[s.label] = i }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                                Box(Modifier.height(30.dp).clip(RoundedCornerShape(50)).background(if (on) c.text else c.text.copy(0.1f)).clickable { HomeSubSel.put(s.label, i) }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
                                     Text(t, color = if (on) c.bg else c.text.copy(0.8f), fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
                                 }
                             }
@@ -250,8 +256,27 @@ private fun BlurBackdrop(url: String?, modifier: Modifier, radius: androidx.comp
 /** 「筛选」 and the channel chevron open the same 频道 sheet. */
 private val HomeChannelSheetOpen = mutableStateOf(false)
 
-/** Sub-tab chosen from the 频道 sheet, per home page label. */
-object HomeSubSel { val map = androidx.compose.runtime.mutableStateMapOf<String, Int>() }
+/** Sub-tab chosen from the 频道 sheet, per home page label. [persist] writes through to the home back-stack ViewModel. */
+object HomeSubSel {
+    val map = androidx.compose.runtime.mutableStateMapOf<String, Int>()
+    var persist: () -> Unit = {}
+    fun put(label: String, index: Int) { map[label] = index; persist() }
+}
+
+/** Restores [HomeSubSel] after process death. Navigation already keeps the ViewModel across detail/player. */
+class HomeSession(private val saved: androidx.lifecycle.SavedStateHandle) : androidx.lifecycle.ViewModel() {
+    init {
+        if (HomeSubSel.map.isEmpty()) {
+            app.iduanju.core.restore.StringMapCodec.decode(saved.get<String>(KEY)).forEach { (label, raw) ->
+                raw.toIntOrNull()?.let { HomeSubSel.map[label] = it }
+            }
+        }
+    }
+    fun persist() {
+        saved[KEY] = app.iduanju.core.restore.StringMapCodec.encode(HomeSubSel.map.mapValues { it.value.toString() })
+    }
+    private companion object { const val KEY = "home.subs" }
+}
 /** One-shot request from another tab (我的 → Telegram 频道 / 漫画) to show a home source page. */
 object HomeJump { var label by androidx.compose.runtime.mutableStateOf<String?>(null) }
 
@@ -348,7 +373,7 @@ private fun FeedPage(source: HomeSource, onOpen: (String) -> Unit) {
     @Composable fun subTabs(modifier: Modifier = Modifier) {
         SegmentedTabs(subs, tab, { it.subLabel }, {
             tab = it
-            HomeSubSel.map[source.label] = subs.indexOf(it)
+            HomeSubSel.put(source.label, subs.indexOf(it))
         }, modifier)
     }
     if (tab == HomeTab.ActorRank) {
